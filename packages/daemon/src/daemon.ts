@@ -6,12 +6,18 @@ import {
   type IMessageLifecycle,
   type IHook,
   type IHookLog,
+  type MultiMessageSchema,
 } from "./types";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "./SSEClientTransport.js";
 import type { TextContent } from "@modelcontextprotocol/sdk/types.js";
 import type { Keypair } from "@solana/web3.js";
-import { createPrompt, generateText } from "./llm.js";
+import {
+  createMultiplePrompts,
+  createPrompt,
+  generateText,
+  generateTextWithMessages,
+} from "./llm.js";
 import nacl from "tweetnacl";
 import { nanoid } from "nanoid";
 import { Buffer } from "buffer";
@@ -66,7 +72,7 @@ export class Daemon implements IDaemon {
   ) {
     this.modelApiKeys = {
       generationKey: opts.modelApiKeys.generationKey,
-    }
+    };
 
     this.keypair = opts.privateKey;
 
@@ -270,6 +276,43 @@ export class Daemon implements IDaemon {
       toolArgs?: {
         [key: string]: any; // key = `serverUrl-toolName`
       };
+      /**
+       * Use a custom system prompt instead of the default one
+       */
+      customSystemPrompt?: string;
+      /**
+       * Opt to use a custom message template instead of the default one.
+       *
+       * This involves passing a string with the following placeholders:
+       * - {{name}}
+       * - {{identityPrompt}}
+       * - {{message}}
+       * - {{context}}
+       * - {{tools}}
+       *
+       * If any of these placeholders are missing, then that section will be omitted.
+       *
+       * @example
+       * ```typescript
+       * const userTemplate = `
+       *   # Name
+       *   {{name}}
+       *
+       *   # Identity
+       *   {{identity}}
+       *
+       *   # Message
+       *   {{message}}
+       *
+       *   # Context
+       *   {{context}}
+       *
+       *   # Tools
+       *   {{tools}}
+       * `;
+       * ```
+       */
+      customMessageTemplate?: string;
     }
   ): Promise<IMessageLifecycle> {
     if (!this.keypair) {
@@ -339,11 +382,214 @@ export class Daemon implements IDaemon {
     }
 
     // Generate Text
-    lifecycle.generatedPrompt = createPrompt(lifecycle);
+    lifecycle.generatedPrompt = createPrompt(
+      lifecycle,
+      opts?.customMessageTemplate
+    );
     lifecycle.output = await generateText(
       this.character.modelSettings.generation,
       this.modelApiKeys.generationKey,
-      lifecycle.generatedPrompt
+      lifecycle.generatedPrompt,
+      opts?.customSystemPrompt
+    );
+
+    if (actions) {
+      let actionPromises: Promise<IMessageLifecycle>[] = [];
+      for (const tool of this.tools.action) {
+        const toolArgs =
+          opts?.toolArgs?.[`${tool.serverUrl}-${tool.tool.name}`];
+        actionPromises.push(
+          this.callTool(tool.tool.name, tool.serverUrl, {
+            lifecycle,
+            args: toolArgs,
+          })
+        );
+      }
+
+      const actionResults = await Promise.all(actionPromises);
+      lifecycle.actionsLog = actionResults
+        .map((lfcyl) => {
+          return lfcyl.actionsLog;
+        })
+        .flat();
+      lifecycle.hooks = actionResults
+        .map((lfcyl) => {
+          return lfcyl.hooks;
+        })
+        .flat();
+
+      let hookPromises: Promise<any>[] = [];
+      for (const hook of lifecycle.hooks) {
+        hookPromises.push(this.hook(hook));
+      }
+
+      const hookResults = await Promise.all(hookPromises);
+      lifecycle.hooksLog = hookResults
+        .map((hookResult) => {
+          return hookResult;
+        })
+        .flat();
+    }
+
+    if (postProcess) {
+      let postProcessPromises: Promise<IMessageLifecycle>[] = [];
+      for (const tool of this.tools.postProcess) {
+        const toolArgs =
+          opts?.toolArgs?.[`${tool.serverUrl}-${tool.tool.name}`];
+        postProcessPromises.push(
+          this.callTool(tool.tool.name, tool.serverUrl, {
+            lifecycle,
+            args: toolArgs,
+          })
+        );
+      }
+
+      const postProcessResults = await Promise.all(postProcessPromises);
+      lifecycle.postProcessLog = postProcessResults
+        .map((lfcyl) => {
+          return lfcyl.postProcessLog;
+        })
+        .flat();
+    }
+
+    return lifecycle;
+  }
+
+  async multipleMessages(
+    messages: MultiMessageSchema[],
+    opts?: {
+      channelId?: string;
+      context?: boolean;
+      actions?: boolean;
+      postProcess?: boolean;
+      toolArgs?: {
+        [key: string]: any; // key = `serverUrl-toolName`
+      };
+      /**
+       * Use a custom system prompt instead of the default one
+       */
+      customSystemPrompt?: string;
+      /**
+       * Opt to use a custom message template instead of the default one.
+       *
+       * This involves passing a string with the following placeholders:
+       * - {{name}}
+       * - {{identityPrompt}}
+       * - {{message}}
+       * - {{context}}
+       * - {{tools}}
+       *
+       * If any of these placeholders are missing, then that section will be omitted.
+       *
+       * @example
+       * ```typescript
+       * const userTemplate = `
+       *   # Name
+       *   {{name}}
+       *
+       *   # Identity
+       *   {{identity}}
+       *
+       *   # Message
+       *   {{message}}
+       *
+       *   # Context
+       *   {{context}}
+       *
+       *   # Tools
+       *   {{tools}}
+       * `;
+       * ```
+       */
+      customMessageTemplate?: string;
+    }
+  ): Promise<IMessageLifecycle> {
+    if (!this.keypair) {
+      throw new Error("Keypair not found");
+    }
+
+    if (!this.character) {
+      throw new Error("Character not found");
+    }
+
+    if (!this.modelApiKeys.generationKey) {
+      throw new Error("Model API keys not found");
+    }
+
+    const context = opts?.context ?? true;
+    const actions = opts?.actions ?? true;
+    const postProcess = opts?.postProcess ?? true;
+
+    const formattedMessages = messages.map(
+      (m) => `
+    # ${m.role}
+    ${m.content}
+    `
+    );
+
+    // Lifecycle: message -> fetchContext -> generateText -> takeActions -> hooks -> callHooks -> postProcess
+    let lifecycle: IMessageLifecycle = {
+      daemonPubkey: this.keypair.publicKey.toBase58(),
+      daemonName: this.character?.name ?? "",
+      messageId: nanoid(),
+      message: formattedMessages,
+      createdAt: new Date().toISOString(),
+      approval: "",
+      channelId: opts?.channelId ?? null,
+      identityPrompt:
+        this.character?.identityPrompt ?? DEFAULT_IDENTITY_PROMPT(this),
+      context: [],
+      tools: [],
+      generatedPrompt: "",
+      output: "",
+      hooks: [],
+      hooksLog: [],
+      actionsLog: [],
+      postProcessLog: [],
+    };
+
+    // Generate Approval
+    lifecycle = this.generateApproval(lifecycle);
+
+    if (context) {
+      let contextPromises: Promise<IMessageLifecycle>[] = [];
+      for (const tool of this.tools.context) {
+        const toolArgs =
+          opts?.toolArgs?.[`${tool.serverUrl}-${tool.tool.name}`];
+        contextPromises.push(
+          this.callTool(tool.tool.name, tool.serverUrl, {
+            lifecycle,
+            args: toolArgs,
+          })
+        );
+      }
+
+      const contextResults = await Promise.all(contextPromises);
+      lifecycle.context = contextResults
+        .map((lfcyl) => {
+          return lfcyl.context;
+        })
+        .flat();
+      lifecycle.tools = contextResults
+        .map((lfcyl) => {
+          return lfcyl.tools;
+        })
+        .flat();
+    }
+
+    // Construct messages with custom prompt if provided
+    const prompts = createMultiplePrompts(
+      lifecycle,
+      messages,
+      opts?.customMessageTemplate
+    );
+    lifecycle.generatedPrompt = prompts.map((p) => p.content);
+    // Generate Text given multiple messages
+    lifecycle.output = await generateTextWithMessages(
+      this.character.modelSettings.generation,
+      this.modelApiKeys.generationKey,
+      prompts,
+      opts?.customSystemPrompt
     );
 
     if (actions) {

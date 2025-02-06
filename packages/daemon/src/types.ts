@@ -20,7 +20,7 @@ export type IHookLog = any;
 
 export const ZMessageLifecycle = z.object({
   daemonPubkey: z.string(),
-  message: z.string(),
+  message: z.string().or(z.array(z.string())),
   messageId: z.string(),
   createdAt: z.string(),
   approval: z.string(),
@@ -29,7 +29,7 @@ export const ZMessageLifecycle = z.object({
   identityPrompt: z.string().nullable(),
   context: z.array(z.string()).default([]),
   tools: z.array(z.string()).default([]),
-  generatedPrompt: z.string().default(""),
+  generatedPrompt: z.string().or(z.array(z.string())).default(""),
   output: z.string().default(""),
   hooks: z.array(ZHook).default([]),
   hooksLog: z.array(z.string()).default([]),
@@ -125,6 +125,11 @@ export interface IIdentityServer extends IDaemonMCPServer {
 export interface ToolRegistration {
   serverUrl: string;
   tool: ITool;
+}
+
+export interface MultiMessageSchema {
+  role: "user" | "assistant";
+  content: string;
 }
 
 export interface IDaemon {

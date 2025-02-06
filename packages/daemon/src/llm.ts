@@ -1,6 +1,13 @@
 import OpenAI from "openai";
-import type { IMessageLifecycle, ModelSettings } from "./types";
+import type {
+  IMessageLifecycle,
+  ModelSettings,
+  MultiMessageSchema,
+} from "./types";
 import Anthropic from "@anthropic-ai/sdk";
+import type { ChatCompletionMessageParam } from "openai/resources";
+import type { MessageParam } from "@anthropic-ai/sdk/resources";
+import { parseTemplate } from "./templateParser";
 
 export const SYSTEM_PROMPT = `
 You are an AI agent operating within a framework that provides you with:
@@ -74,7 +81,8 @@ export async function generateEmbeddings(
 export async function generateText(
   generationModelSettings: ModelSettings,
   generationModelKey: string,
-  userMessage: string
+  userMessage: string,
+  customSystemPrompt?: string
 ): Promise<string> {
   switch (generationModelSettings?.provider) {
     case "openai":
@@ -89,7 +97,7 @@ export async function generateText(
         messages: [
           {
             role: "system",
-            content: SYSTEM_PROMPT,
+            content: customSystemPrompt ?? SYSTEM_PROMPT,
           },
           {
             role: "user",
@@ -110,7 +118,7 @@ export async function generateText(
 
       const anthropicResponse = await anthropic.messages.create({
         model: generationModelSettings.name,
-        system: SYSTEM_PROMPT,
+        system: customSystemPrompt ?? SYSTEM_PROMPT,
         messages: [
           {
             role: "user",
@@ -126,8 +134,96 @@ export async function generateText(
   }
 }
 
-export function createPrompt(lifecycle: IMessageLifecycle): string {
-  return `
+/**
+ * Generates text using an OpenAI or Anthropic compatible model, using multiple messages.
+ *
+ * @param generationModelSettings The settings for the generation model.
+ * @param generationModelKey The API key for the generation model.
+ * @param messages An array of messages to generate text from.
+ * @param customSystemPrompt An optional custom system prompt to use for the generation.
+ * @returns The generated text as a string.
+ */
+export async function generateTextWithMessages(
+  generationModelSettings: ModelSettings,
+  generationModelKey: string,
+  messages: MultiMessageSchema[],
+  customSystemPrompt?: string
+): Promise<string> {
+  switch (generationModelSettings?.provider) {
+    case "openai":
+      const openai = new OpenAI({
+        apiKey: generationModelKey,
+        baseURL: generationModelSettings.endpoint,
+        dangerouslyAllowBrowser: true,
+      });
+
+      const formattedMessages = messages.map(
+        (m) =>
+          ({
+            role: m.role,
+            content: m.content,
+          }) as ChatCompletionMessageParam
+      );
+
+      const openaiResponse = await openai.chat.completions.create({
+        model: generationModelSettings.name,
+        messages: [
+          {
+            role: "system",
+            content: customSystemPrompt ?? SYSTEM_PROMPT,
+          },
+          ...formattedMessages,
+        ],
+        temperature: generationModelSettings.temperature,
+        max_completion_tokens: generationModelSettings.maxTokens,
+      });
+
+      return openaiResponse.choices[0].message.content ?? "";
+      break;
+    case "anthropic":
+      const anthropic = new Anthropic({
+        apiKey: generationModelKey,
+        baseURL: generationModelSettings.endpoint,
+      });
+
+      const anthropicResponse = await anthropic.messages.create({
+        model: generationModelSettings.name,
+        system: customSystemPrompt ?? SYSTEM_PROMPT,
+        messages: [
+          ...messages.map(
+            (m) =>
+              ({
+                role: m.role,
+                content: m.content,
+              }) as MessageParam
+          ),
+        ],
+        max_tokens: generationModelSettings.maxTokens ?? 1000,
+        temperature: generationModelSettings.temperature ?? 0.2,
+      });
+
+      return anthropicResponse.content.join("\n");
+      break;
+  }
+}
+
+export function createPrompt(
+  lifecycle: IMessageLifecycle,
+  overridePromptTemplate?: string
+): string {
+  if (overridePromptTemplate) {
+    return parseTemplate(
+      {
+        lifecycle,
+        message: {
+          role: "user",
+          content: lifecycle.message as string,
+        },
+      },
+      overridePromptTemplate
+    ).content;
+  } else {
+    return `
   # Name
   ${lifecycle.daemonName}
 
@@ -143,4 +239,52 @@ export function createPrompt(lifecycle: IMessageLifecycle): string {
   # Tools
   ${lifecycle.tools?.join("\n")}
   `;
+  }
+}
+
+export function createMultiplePrompts(
+  lifecycle: IMessageLifecycle,
+  messages: MultiMessageSchema[],
+  overridePromptTemplate?: string
+): MultiMessageSchema[] {
+  if (overridePromptTemplate) {
+    return messages.map((m) => {
+      return parseTemplate(
+        {
+          lifecycle,
+          message: { role: m.role, content: m.content },
+        },
+        overridePromptTemplate
+      );
+    });
+  } else {
+    return messages.map((m) => {
+      if (m.role === "user") {
+        return {
+          role: "user",
+          content: `
+  # Name
+  ${lifecycle.daemonName}
+
+  # Identity Prompt
+  ${lifecycle.identityPrompt}
+
+  # User Message
+  ${m.content}
+  
+  # Context
+  ${lifecycle.context?.join("\n")}
+
+  # Tools
+  ${lifecycle.tools?.join("\n")}
+  `,
+        };
+      } else {
+        return {
+          role: "assistant",
+          content: m.content,
+        };
+      }
+    });
+  }
 }
