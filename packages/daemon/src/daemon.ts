@@ -67,7 +67,7 @@ export class Daemon implements IDaemon {
   ) {
     this.modelApiKeys = {
       generationKey: opts.modelApiKeys.generationKey,
-    }
+    };
 
     this.keypair = opts.privateKey;
 
@@ -243,21 +243,38 @@ export class Daemon implements IDaemon {
   private async callTool(
     toolName: string,
     toolURL: string,
-    args: any
+    args: any,
+    opts?: { timeout?: number; retries?: number }
   ): Promise<any> {
-    const client = this.mcpClients[toolURL].client;
+    let retryCount = 0;
+    try {
+      const client = this.mcpClients[toolURL].client;
 
-    const result = (
-      await client.callTool({
-        name: toolName,
-        arguments: args,
-      })
-    ).content as TextContent[];
+      const result = (
+        await client.callTool(
+          {
+            name: toolName,
+            arguments: args,
+          },
+          undefined,
+          { timeout: opts?.timeout ?? 15000 }
+        )
+      ).content as TextContent[];
 
-    if (result[0].text.includes("Error")) {
-      throw new Error(result[0].text);
-    } else {
-      return JSON.parse(result[0].text);
+      if (result[0].text.includes("Error")) {
+        return result[0].text;
+      } else {
+        return JSON.parse(result[0].text);
+      }
+    } catch (e) {
+      if (opts?.retries && opts.retries > 0) {
+        retryCount++;
+        return this.callTool(toolName, toolURL, args, {
+          ...opts,
+          retries: opts.retries - retryCount,
+        });
+      }
+      console.error("Failed to call tool: " + `[${toolName}:${toolURL}]`);
     }
   }
 
@@ -272,6 +289,10 @@ export class Daemon implements IDaemon {
         [key: string]: any; // key = `serverUrl-toolName`
       };
       modelOverride?: ModelSettings;
+      // Set a timeout for each tool call (in milliseconds)
+      timeout?: number;
+      // Set a number of retries for each tool call
+      retries?: number;
     }
   ): Promise<IMessageLifecycle> {
     if (!this.keypair) {
@@ -323,6 +344,10 @@ export class Daemon implements IDaemon {
           this.callTool(tool.tool.name, tool.serverUrl, {
             lifecycle,
             args: toolArgs,
+            opts: {
+              timeout: opts?.timeout ?? 15000,
+              retries: opts?.retries ?? 3,
+            },
           })
         );
       }
@@ -340,7 +365,8 @@ export class Daemon implements IDaemon {
         .flat();
     }
 
-    const modelSettings = opts?.modelOverride ?? this.character.modelSettings.generation;
+    const modelSettings =
+      opts?.modelOverride ?? this.character.modelSettings.generation;
     if (!modelSettings.apiKey) {
       modelSettings.apiKey = this.modelApiKeys.generationKey;
     }
@@ -362,6 +388,10 @@ export class Daemon implements IDaemon {
           this.callTool(tool.tool.name, tool.serverUrl, {
             lifecycle,
             args: toolArgs,
+            opts: {
+              timeout: opts?.timeout ?? 15000,
+              retries: opts?.retries ?? 3,
+            },
           })
         );
       }
@@ -400,6 +430,10 @@ export class Daemon implements IDaemon {
           this.callTool(tool.tool.name, tool.serverUrl, {
             lifecycle,
             args: toolArgs,
+            opts: {
+              timeout: opts?.timeout ?? 15000,
+              retries: opts?.retries ?? 3,
+            },
           })
         );
       }
