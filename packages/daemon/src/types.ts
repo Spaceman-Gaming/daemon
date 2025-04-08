@@ -3,11 +3,10 @@ import type { BehaviorSubject } from "rxjs";
 import { z } from "zod";
 
 export type ModelProvider =  {
-    [provider: string]: {
-        endpoint: string;
-        models: string[];
-        apiKey: string;
-    }
+    provider: string;
+    endpoint: string;
+    models: string[];
+    apiKey: string;
 }
 
 export type ToolProvider = {
@@ -64,7 +63,7 @@ export type IMessageLifecycle = z.infer<typeof ZMessageLifecycle>;
 export interface IDaemon {
     character: Character | undefined;
     keypair: Keypair | undefined;
-    models: ModelProvider;
+    models: ModelProvider[];
     tools: ToolProvider[];
 
     addModelProvider(provider: ModelProvider): Promise<void>;

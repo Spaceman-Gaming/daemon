@@ -18,7 +18,7 @@ You are ${name}. Keep your responses concise and to the point.
 export class Daemon implements IDaemon {	
 	character: Character;
 	keypair: Keypair;
-	models: ModelProvider = {}
+	models: ModelProvider[] = []
 	tools: ToolProvider[] = []
 
 	constructor(    
@@ -30,10 +30,13 @@ export class Daemon implements IDaemon {
     }
 
 	async addModelProvider(provider: ModelProvider): Promise<void> {
-		this.models = {
-			...this.models,
-			...provider,
-		}
+		const existingProvider = this.models.find(p => p.provider === provider.provider);
+		if (existingProvider) {
+			// replace the existing provider
+			this.models = this.models.map(p => p.provider === provider.provider ? provider : p);
+		} else {
+            this.models.push(provider);
+        }
 	}
 	
 	async addSingleToolFromProvider(provider: ToolProvider): Promise<void> {
@@ -176,17 +179,17 @@ export class Daemon implements IDaemon {
                 throw new Error("No LLM provider chosen")
             }
 
-            const model:string = opts?.llm?.model ?? Object.keys(this.models[provider])[0];
+            const model:string = opts?.llm?.model ?? this.models.find(p => p.provider === provider)?.models[0] ?? "";
             if(!model) {
                 throw new Error("No LLM model chosen")
             }
 
-            const apiKey = opts?.llm?.apiKey ?? this.models[provider].apiKey;
+            const apiKey = opts?.llm?.apiKey ?? this.models.find(p => p.provider === provider)?.apiKey ?? "";
             if(!apiKey) {
                 throw new Error("No LLM API key chosen")
             }
 
-            const endpoint = opts?.llm?.endpoint ?? this.models[provider].endpoint;
+            const endpoint = opts?.llm?.endpoint ?? this.models.find(p => p.provider === provider)?.endpoint ?? "";
             if(!endpoint) {
                 throw new Error("No LLM endpoint chosen")
             }
