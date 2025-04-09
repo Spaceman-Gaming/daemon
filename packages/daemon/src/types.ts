@@ -11,8 +11,14 @@ export type ModelProvider =  {
 
 export type ToolProvider = {
     serverUrl: string;
-    tool: string;
-    type: "utility" | "context" | "action" | "postProcess";
+    toolName: string;
+    type: "utility" | "context" | "action" | "postProcess" | "ondemand";
+    description: string;
+    parameters: {
+        name: string;
+        description: string;
+        type: "string" | "number" | "boolean" | "array" | "object";
+    }[],
 }
 
 export const ZCharacter = z.object({

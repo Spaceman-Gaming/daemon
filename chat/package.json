@@ -25,8 +25,8 @@
         "vite": "^5.4.11"
     },
     "dependencies": {
-        "@spacemangaming/daemon": "workspace:@spacemangaming/daemon",
-        "@spacemangaming/mcp-servers": "workspace:@spacemangaming/mcp-server",
+        "@spacemangaming/daemon": "0.1.17",
+        "@spacemangaming/mcp-servers": "0.1.7",
         "bs58": "^6.0.0",
         "dexie": "^4.0.11",
         "esbuild": "0.21.5",
